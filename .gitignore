@@ -1,0 +1,20 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# SQLite database (user data — don't commit)
+hospital.db
+
+# Streamlit logs
+streamlit_output.log
+
+# Test/verification scripts (internal tooling)
+verify_backend.py
+
+# OS files
+.DS_Store
+Thumbs.db
