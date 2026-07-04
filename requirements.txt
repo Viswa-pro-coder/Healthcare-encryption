@@ -2,3 +2,8 @@ streamlit
 cryptography
 pandas
 requests
+langchain
+langchain-google-genai
+langchain-core
+NorenRestApiPy
+websocket-client
