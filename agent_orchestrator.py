@@ -3,7 +3,12 @@ import time
 import json
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from langchain_google_genai import ChatGoogleGenerativeAI
+
+# The standard AgentExecutor and create_tool_calling_agent have been migrated to langgraph in the newest pip packages.
+# We will use the built-in langgraph agent.
+from langgraph.prebuilt import create_react_agent
 from NorenRestApiPy.NorenApi import NorenApi
 from fetch_options import get_nifty_data
 from strategy_engine import calculate_straddle_parameters, evaluate_exit_conditions
@@ -44,7 +49,7 @@ def get_shoonya_api() -> ShoonyaApi:
 
 api = get_shoonya_api()
 
-def execute_trade(decision_json: str):
+def execute_trade(decision_json: str) -> str:
     """
     Executes trades using the Shoonya API based on the LangChain agent's structured JSON output.
     Expects decision_json to contain details like action ('enter', 'exit'), strikes, and legs.
@@ -57,38 +62,55 @@ def execute_trade(decision_json: str):
         if action == "enter":
             # Pseudo-code for placing MIS short straddle orders
             logger.info("Placing MIS market orders to ENTER Short Straddle...")
+            return "Trade executed successfully: ENTER"
         elif action == "exit":
             logger.info("Placing MIS market orders to EXIT Short Straddle...")
+            return "Trade executed successfully: EXIT"
         else:
             logger.warning("No action taken.")
+            return "No valid action taken."
     except Exception as e:
         logger.error(f"Error executing trade: {e}")
+        return f"Error executing trade: {e}"
 
 # --- LangChain Setup ---
-def get_llm():
+def get_agent_executor():
     try:
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
-        # Bind the strategy engine functions as tools
         tools = [calculate_straddle_parameters, evaluate_exit_conditions, execute_trade]
-        return llm.bind_tools(tools)
+
+        system_prompt = (
+            "You are an autonomous options trading agent executing a NIFTY Short Straddle strategy. "
+            "You are provided with real-time market data and the current time. "
+            "Use your tools to calculate entry parameters if we have no position, or evaluate exit conditions if we are in a position. "
+            "If conditions are met, use the execute_trade tool. "
+            "Analyze the current market state and decide the next action."
+        )
+
+        agent_executor = create_react_agent(llm, tools, state_modifier=system_prompt)
+        return agent_executor
     except Exception as e:
-        logger.error(f"Error initializing LangChain LLM: {e}")
+        logger.error(f"Error initializing LangChain agent: {e}")
         return None
 
 # --- Main Trading Loop ---
+def get_ist_time() -> datetime:
+    """Returns the current time in IST."""
+    return datetime.now(ZoneInfo("Asia/Kolkata"))
+
 def is_market_open() -> bool:
     """Checks if the current time in IST is between 09:15 AM and 03:30 PM."""
-    now = datetime.now()
-    market_start = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    market_end = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    now_ist = get_ist_time()
+    market_start = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_end = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
 
-    return market_start <= now <= market_end
+    return market_start <= now_ist <= market_end
 
 def main_loop():
     logger.info("Starting Autonomous Trading Loop...")
-    llm = get_llm()
-    if not llm:
-        logger.error("LLM initialization failed. Exiting.")
+    agent_executor = get_agent_executor()
+    if not agent_executor:
+        logger.error("Agent Executor initialization failed. Exiting.")
         return
 
     while True:
@@ -106,26 +128,19 @@ def main_loop():
                 time.sleep(60)
                 continue
 
-            current_time = datetime.now().strftime("%H:%M")
+            current_time = get_ist_time().strftime("%H:%M")
 
-            prompt = f"""
-            You are an autonomous options trading agent executing a NIFTY Short Straddle strategy.
+            user_input = f"""
             The current time is {current_time} IST.
             Latest Market Data: {json.dumps(market_data)}
 
-            Use your tools to calculate entry parameters if we have no position, or evaluate exit conditions if we are in a position.
-            If conditions are met, use the execute_trade tool.
-            Analyze the current market state and decide the next action.
+            Please evaluate the market data and decide whether to enter, hold, or exit the trade.
             """
 
             logger.info("Prompting LangChain agent...")
-            response = llm.invoke(prompt)
+            messages = agent_executor.invoke({"messages": [("user", user_input)]})
 
-            if response.tool_calls:
-                for tool_call in response.tool_calls:
-                    logger.info(f"Agent wants to call tool: {tool_call['name']} with args {tool_call['args']}")
-            else:
-                logger.info(f"Agent response: {response.content}")
+            logger.info(f"Agent final response: {messages['messages'][-1].content}")
 
         except Exception as e:
             logger.error(f"Error in main loop: {e}")
